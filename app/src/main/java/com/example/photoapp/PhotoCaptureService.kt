@@ -20,6 +20,14 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -32,6 +40,7 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
     private var imageCapture: ImageCapture? = null
     private lateinit var cameraExecutor: ExecutorService
     private lateinit var audioManager: AudioManager
+    private val client = OkHttpClient()
 
     override val lifecycle: Lifecycle
         get() = lifecycleRegistry
@@ -58,9 +67,6 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
     }
 
     override fun onKeyEvent(event: KeyEvent): Boolean {
-        // This is a high-visibility log to confirm the function is being called at all.
-        Log.i(TAG, "++++ KEY EVENT DETECTED: keyCode=${event.keyCode}, action=${event.action} ++++")
-
         if (event.action == KeyEvent.ACTION_UP && event.keyCode == KeyEvent.KEYCODE_F2) {
             Log.d(TAG, "Camera button (F2) release detected by service. Taking photo.")
             takePhoto()
@@ -113,9 +119,57 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
                     val msg = "Service photo capture succeeded: ${output.savedUri}"
                     Log.d(TAG, msg)
                     playNotificationSound()
+                    output.savedUri?.let { uploadImage(it) }
                 }
             }
         )
+    }
+
+    private fun uploadImage(fileUri: Uri) {
+        Log.d(TAG, "Preparing to upload image: $fileUri")
+        val imageBytes = try {
+            contentResolver.openInputStream(fileUri)?.use { it.readBytes() }
+        } catch (e: IOException) {
+            Log.e(TAG, "Could not read bytes from content URI", e)
+            null
+        }
+
+        if (imageBytes == null) {
+            Log.e(TAG, "Image bytes are null, aborting upload.")
+            return
+        }
+
+        Log.d(TAG, "Image size: ${imageBytes.size} bytes")
+
+        val requestBody = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart(
+                "file",
+                "photo.jpg",
+                imageBytes.toRequestBody("image/jpeg".toMediaTypeOrNull())
+            )
+            .build()
+
+        val request = Request.Builder()
+            .url("https://vertically-prime-snake.ngrok-free.app/upload-photo")
+            .post(requestBody)
+            .build()
+
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e(TAG, "Upload failed: ${e.message}", e)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.use {
+                    if (it.isSuccessful) {
+                        Log.d(TAG, "Upload successful: ${it.body?.string()}")
+                    } else {
+                        Log.e(TAG, "Upload failed with code: ${it.code} and message: ${it.body?.string()}")
+                    }
+                }
+            }
+        })
     }
 
     private fun playNotificationSound() {
@@ -146,7 +200,6 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
         super.onDestroy()
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         cameraExecutor.shutdown()
-        Log.w(TAG, "Service has been destroyed.")
     }
 
     companion object {
