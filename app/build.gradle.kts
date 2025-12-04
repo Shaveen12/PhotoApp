@@ -5,9 +5,7 @@ plugins {
 
 android {
     namespace = "com.example.photoapp"
-    compileSdk {
-        version = release(36)
-    }
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.example.photoapp"
@@ -29,11 +27,11 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
     }
     kotlinOptions {
-        jvmTarget = "11"
+        jvmTarget = "1.8"
     }
 }
 
@@ -44,4 +42,9 @@ dependencies {
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
+
+    // CameraX dependencies
+    implementation("androidx.camera:camera-core:1.5.1")
+    implementation("androidx.camera:camera-camera2:1.5.1")
+    implementation("androidx.camera:camera-lifecycle:1.5.1")
 }
