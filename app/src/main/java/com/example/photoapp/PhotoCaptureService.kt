@@ -1,0 +1,156 @@
+package com.example.photoapp
+
+import android.accessibilityservice.AccessibilityService
+import android.content.ContentValues
+import android.content.Context
+import android.media.AudioManager
+import android.media.MediaPlayer
+import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
+import android.provider.Settings
+import android.util.Log
+import android.view.KeyEvent
+import android.view.accessibility.AccessibilityEvent
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
+import java.io.IOException
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+
+class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
+
+    private lateinit var lifecycleRegistry: LifecycleRegistry
+    private var imageCapture: ImageCapture? = null
+    private lateinit var cameraExecutor: ExecutorService
+    private lateinit var audioManager: AudioManager
+
+    override val lifecycle: Lifecycle
+        get() = lifecycleRegistry
+
+    override fun onCreate() {
+        super.onCreate()
+        lifecycleRegistry = LifecycleRegistry(this)
+        lifecycleRegistry.currentState = Lifecycle.State.CREATED
+    }
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        cameraExecutor = Executors.newSingleThreadExecutor()
+        lifecycleRegistry.currentState = Lifecycle.State.STARTED
+        startCamera()
+        Log.d(TAG, "PhotoCaptureService connected")
+    }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+
+    override fun onInterrupt() {
+        Log.w(TAG, "Service has been interrupted by the system.")
+    }
+
+    override fun onKeyEvent(event: KeyEvent): Boolean {
+        // This is a high-visibility log to confirm the function is being called at all.
+        Log.i(TAG, "++++ KEY EVENT DETECTED: keyCode=${event.keyCode}, action=${event.action} ++++")
+
+        if (event.action == KeyEvent.ACTION_UP && event.keyCode == KeyEvent.KEYCODE_F2) {
+            Log.d(TAG, "Camera button (F2) release detected by service. Taking photo.")
+            takePhoto()
+            return true
+        }
+        return false
+    }
+
+    private fun startCamera() {
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+
+        cameraProviderFuture.addListener({
+            val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
+            imageCapture = ImageCapture.Builder().build()
+            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+
+            try {
+                cameraProvider.unbindAll()
+                cameraProvider.bindToLifecycle(this, cameraSelector, imageCapture)
+                Log.d(TAG, "Service camera started and bound to lifecycle.")
+            } catch (exc: Exception) {
+                Log.e(TAG, "Service camera use case binding failed", exc)
+            }
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun takePhoto() {
+        val imageCapture = imageCapture ?: return
+
+        val name = SimpleDateFormat(FILENAME_FORMAT, Locale.US).format(System.currentTimeMillis())
+        val contentValues = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+            if (Build.VERSION.SDK_INT > Build.VERSION_CODES.P) {
+                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/PhotoApp-Images")
+            }
+        }
+
+        val outputOptions = ImageCapture.OutputFileOptions.Builder(contentResolver, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues).build()
+
+        imageCapture.takePicture(
+            outputOptions,
+            ContextCompat.getMainExecutor(this),
+            object : ImageCapture.OnImageSavedCallback {
+                override fun onError(exc: ImageCaptureException) {
+                    Log.e(TAG, "Service photo capture failed: ", exc)
+                }
+
+                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                    val msg = "Service photo capture succeeded: ${output.savedUri}"
+                    Log.d(TAG, msg)
+                    playNotificationSound()
+                }
+            }
+        )
+    }
+
+    private fun playNotificationSound() {
+        val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        val currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        Log.d(TAG, "Current media volume: $currentVolume / $maxVolume.")
+
+        if (currentVolume == 0) {
+            Log.w(TAG, "Media volume was 0. Setting to max to ensure sound is audible.")
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVolume, 0)
+        }
+
+        try {
+            val notificationUri: Uri = Settings.System.DEFAULT_NOTIFICATION_URI
+            val player = MediaPlayer.create(this, notificationUri)
+            player.setOnCompletionListener { mp ->
+                mp.release()
+                Log.d(TAG, "MediaPlayer released.")
+            }
+            player.start()
+            Log.d(TAG, "MediaPlayer started.")
+        } catch (e: IOException) {
+            Log.e(TAG, "Failed to play notification sound", e)
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
+        cameraExecutor.shutdown()
+        Log.w(TAG, "Service has been destroyed.")
+    }
+
+    companion object {
+        private const val TAG = "PhotoCaptureService"
+        private const val FILENAME_FORMAT = "yyyy-MM-dd-HH-mm-ss-SSS"
+    }
+}
