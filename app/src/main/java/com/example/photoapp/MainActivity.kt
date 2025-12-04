@@ -61,7 +61,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun playNotificationSound() {
         val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        var currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
         Log.d(TAG, "Current media volume: $currentVolume / $maxVolume.")
 
         if (currentVolume == 0) {
@@ -89,14 +89,12 @@ class MainActivity : AppCompatActivity() {
             KeyEvent.KEYCODE_VOLUME_UP -> {
                 counter++
                 counterText.text = counter.toString()
-                playNotificationSound()
                 Log.d(TAG, "Volume Up pressed. Counter is now: $counter")
                 return true
             }
             KeyEvent.KEYCODE_VOLUME_DOWN -> {
                 counter--
                 counterText.text = counter.toString()
-                playNotificationSound()
                 Log.d(TAG, "Volume Down pressed. Counter is now: $counter")
                 return true
             }
