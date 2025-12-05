@@ -118,28 +118,26 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
                     val msg = "Service photo capture succeeded: ${output.savedUri}"
                     Log.d(TAG, msg)
-                    playNotificationSound()
-                    output.savedUri?.let { uploadImage(it) }
+                    playCustomSound()
+                    output.savedUri?.let { identifyFace(it) }
                 }
             }
         )
     }
 
-    private fun uploadImage(fileUri: Uri) {
-        Log.d(TAG, "Preparing to upload image: $fileUri")
+    private fun identifyFace(fileUri: Uri) {
+        Log.d(TAG, "Preparing to identify face for image: $fileUri")
         val imageBytes = try {
             contentResolver.openInputStream(fileUri)?.use { it.readBytes() }
         } catch (e: IOException) {
-            Log.e(TAG, "Could not read bytes from content URI", e)
+            Log.e(TAG, "Could not read bytes from content URI for identification", e)
             null
         }
 
         if (imageBytes == null) {
-            Log.e(TAG, "Image bytes are null, aborting upload.")
+            Log.e(TAG, "Image bytes are null, aborting identification request.")
             return
         }
-
-        Log.d(TAG, "Image size: ${imageBytes.size} bytes")
 
         val requestBody = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
@@ -151,48 +149,38 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
             .build()
 
         val request = Request.Builder()
-            .url("https://vertically-prime-snake.ngrok-free.app/upload-photo")
+            .url("https://vertically-prime-snake.ngrok-free.app/face/identify")
             .post(requestBody)
             .build()
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                Log.e(TAG, "Upload failed: ${e.message}", e)
+                Log.e(TAG, "Face identification request failed: ${e.message}", e)
             }
 
             override fun onResponse(call: Call, response: Response) {
                 response.use {
                     if (it.isSuccessful) {
-                        Log.d(TAG, "Upload successful: ${it.body?.string()}")
+                        val identificationResult = it.body?.string()
+                        Log.d(TAG, "Face identification successful: $identificationResult")
                     } else {
-                        Log.e(TAG, "Upload failed with code: ${it.code} and message: ${it.body?.string()}")
+                        Log.e(TAG, "Face identification request failed with code: ${it.code} and message: ${it.body?.string()}")
                     }
                 }
             }
         })
     }
 
-    private fun playNotificationSound() {
-        val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        val currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-        Log.d(TAG, "Current media volume: $currentVolume / $maxVolume.")
-
-        if (currentVolume == 0) {
-            Log.w(TAG, "Media volume was 0. Setting to max to ensure sound is audible.")
-            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVolume, 0)
-        }
-
+    private fun playCustomSound() {
         try {
-            val notificationUri: Uri = Settings.System.DEFAULT_NOTIFICATION_URI
-            val player = MediaPlayer.create(this, notificationUri)
+            val player = MediaPlayer.create(this, R.raw.increment)
             player.setOnCompletionListener { mp ->
                 mp.release()
-                Log.d(TAG, "MediaPlayer released.")
+                Log.d(TAG, "Custom sound finished.")
             }
             player.start()
-            Log.d(TAG, "MediaPlayer started.")
-        } catch (e: IOException) {
-            Log.e(TAG, "Failed to play notification sound", e)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to play custom sound", e)
         }
     }
 
