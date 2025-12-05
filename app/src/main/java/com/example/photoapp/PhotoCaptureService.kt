@@ -8,7 +8,6 @@ import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
-import android.provider.Settings
 import android.util.Log
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
@@ -28,6 +27,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -39,7 +40,6 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
     private lateinit var lifecycleRegistry: LifecycleRegistry
     private var imageCapture: ImageCapture? = null
     private lateinit var cameraExecutor: ExecutorService
-    private lateinit var audioManager: AudioManager
     private val client = OkHttpClient()
 
     override val lifecycle: Lifecycle
@@ -53,7 +53,6 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         cameraExecutor = Executors.newSingleThreadExecutor()
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
         startCamera()
@@ -118,7 +117,7 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
                     val msg = "Service photo capture succeeded: ${output.savedUri}"
                     Log.d(TAG, msg)
-                    playCustomSound()
+                    // We no longer play a local sound, we wait for the server's audio response.
                     output.savedUri?.let { identifyFace(it) }
                 }
             }
@@ -149,38 +148,54 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
             .build()
 
         val request = Request.Builder()
-            .url("https://vertically-prime-snake.ngrok-free.app/face/identify")
+            .url("https://vertically-prime-snake.ngrok-free.app/face/identify-audio")
             .post(requestBody)
             .build()
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                Log.e(TAG, "Face identification request failed: ${e.message}", e)
+                Log.e(TAG, "Face identification audio request failed: ${e.message}", e)
             }
 
             override fun onResponse(call: Call, response: Response) {
                 response.use {
                     if (it.isSuccessful) {
-                        val identificationResult = it.body?.string()
-                        Log.d(TAG, "Face identification successful: $identificationResult")
+                        val audioBytes = it.body?.bytes()
+                        if (audioBytes != null) {
+                            Log.d(TAG, "Face identification audio received: ${audioBytes.size} bytes.")
+                            playAudioData(audioBytes)
+                        } else {
+                            Log.e(TAG, "Received successful response but audio body was empty.")
+                        }
                     } else {
-                        Log.e(TAG, "Face identification request failed with code: ${it.code} and message: ${it.body?.string()}")
+                        Log.e(TAG, "Face identification audio request failed with code: ${it.code} and message: ${it.body?.string()}")
                     }
                 }
             }
         })
     }
 
-    private fun playCustomSound() {
+    private fun playAudioData(audioBytes: ByteArray) {
         try {
-            val player = MediaPlayer.create(this, R.raw.increment)
-            player.setOnCompletionListener { mp ->
+            // Create a temporary file in the app's cache directory
+            val tempMp3 = File.createTempFile("temp_audio", ".mp3", cacheDir)
+            val fos = FileOutputStream(tempMp3)
+            fos.write(audioBytes)
+            fos.close()
+            Log.d(TAG, "Audio data saved to temporary file: ${tempMp3.path}")
+
+            // Play the temporary file with MediaPlayer
+            val mediaPlayer = MediaPlayer()
+            mediaPlayer.setDataSource(tempMp3.absolutePath)
+            mediaPlayer.prepare()
+            mediaPlayer.setOnCompletionListener { mp ->
+                Log.d(TAG, "Finished playing server audio.")
                 mp.release()
-                Log.d(TAG, "Custom sound finished.")
+                tempMp3.delete()
             }
-            player.start()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to play custom sound", e)
+            mediaPlayer.start()
+        } catch (e: IOException) {
+            Log.e(TAG, "Error playing audio data", e)
         }
     }
 
