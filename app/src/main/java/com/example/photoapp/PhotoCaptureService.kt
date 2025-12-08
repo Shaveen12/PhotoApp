@@ -39,6 +39,7 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
     private var imageCapture: ImageCapture? = null
     private lateinit var cameraExecutor: ExecutorService
     private val client = OkHttpClient()
+    private var mediaPlayer: MediaPlayer? = null
 
     override val lifecycle: Lifecycle
         get() = lifecycleRegistry
@@ -115,34 +116,42 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
                     val msg = "Service photo capture succeeded: ${output.savedUri}"
                     Log.d(TAG, msg)
-                    playCaptureSound() // 1. Play local sound for immediate feedback
-                    output.savedUri?.let { getIdentificationAudio(it) } // 2. Send network request
+                    output.savedUri?.let {
+                        playCaptureSoundAndThenUpload(it) // Chain the actions together
+                    }
                 }
             }
         )
     }
 
-    private fun playCaptureSound() {
+    private fun playCaptureSoundAndThenUpload(fileUri: Uri) {
+        stopAndReleasePlayer()
         try {
-            val player = MediaPlayer.create(this, R.raw.increment)
-            player.setOnCompletionListener { mp ->
-                mp.release()
-                Log.d(TAG, "Local capture sound finished.")
+            mediaPlayer = MediaPlayer.create(this, R.raw.increment)
+            mediaPlayer?.setOnCompletionListener { 
+                Log.d(TAG, "Local capture sound finished, starting network request.")
+                getIdentificationAudio(fileUri) 
+                stopAndReleasePlayer()
             }
-            player.start()
+            mediaPlayer?.start()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to play local capture sound", e)
         }
     }
 
+    @Synchronized
+    private fun stopAndReleasePlayer() {
+        mediaPlayer?.stop()
+        mediaPlayer?.release()
+        mediaPlayer = null
+    }
+
     private fun playErrorSound() {
+        stopAndReleasePlayer()
         try {
-            val player = MediaPlayer.create(this, R.raw.decrement)
-            player.setOnCompletionListener { mp ->
-                mp.release()
-                Log.d(TAG, "Local error sound finished.")
-            }
-            player.start()
+            mediaPlayer = MediaPlayer.create(this, R.raw.decrement)
+            mediaPlayer?.setOnCompletionListener { stopAndReleasePlayer() }
+            mediaPlayer?.start()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to play local error sound", e)
         }
@@ -179,7 +188,6 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 Log.e(TAG, "Identification audio request failed: ${e.message}", e)
-                // Check for the specific no-internet error and play the error sound
                 if (e.message?.contains("Unable to resolve host") == true) {
                     playErrorSound()
                 }
@@ -204,22 +212,21 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
     }
 
     private fun playAudioData(audioBytes: ByteArray) {
+        stopAndReleasePlayer()
         try {
             val tempMp3 = File.createTempFile("temp_audio", ".mp3", cacheDir)
             val fos = FileOutputStream(tempMp3)
             fos.write(audioBytes)
             fos.close()
-            Log.d(TAG, "Audio data saved to temporary file: ${tempMp3.path}")
 
-            val mediaPlayer = MediaPlayer()
-            mediaPlayer.setDataSource(tempMp3.absolutePath)
-            mediaPlayer.prepare()
-            mediaPlayer.setOnCompletionListener { mp ->
-                Log.d(TAG, "Finished playing server audio.")
-                mp.release()
+            mediaPlayer = MediaPlayer()
+            mediaPlayer?.setDataSource(tempMp3.absolutePath)
+            mediaPlayer?.prepare()
+            mediaPlayer?.setOnCompletionListener { 
+                stopAndReleasePlayer()
                 tempMp3.delete()
             }
-            mediaPlayer.start()
+            mediaPlayer?.start()
         } catch (e: IOException) {
             Log.e(TAG, "Error playing audio data from server", e)
         }
@@ -229,6 +236,7 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
         super.onDestroy()
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         cameraExecutor.shutdown()
+        stopAndReleasePlayer()
     }
 
     companion object {
