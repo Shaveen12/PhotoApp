@@ -115,10 +115,37 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
                     val msg = "Service photo capture succeeded: ${output.savedUri}"
                     Log.d(TAG, msg)
-                    output.savedUri?.let { getIdentificationAudio(it) } // Get and play audio from server
+                    playCaptureSound() // 1. Play local sound for immediate feedback
+                    output.savedUri?.let { getIdentificationAudio(it) } // 2. Send network request
                 }
             }
         )
+    }
+
+    private fun playCaptureSound() {
+        try {
+            val player = MediaPlayer.create(this, R.raw.increment)
+            player.setOnCompletionListener { mp ->
+                mp.release()
+                Log.d(TAG, "Local capture sound finished.")
+            }
+            player.start()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to play local capture sound", e)
+        }
+    }
+
+    private fun playErrorSound() {
+        try {
+            val player = MediaPlayer.create(this, R.raw.decrement)
+            player.setOnCompletionListener { mp ->
+                mp.release()
+                Log.d(TAG, "Local error sound finished.")
+            }
+            player.start()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to play local error sound", e)
+        }
     }
 
     private fun getIdentificationAudio(fileUri: Uri) {
@@ -152,6 +179,10 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 Log.e(TAG, "Identification audio request failed: ${e.message}", e)
+                // Check for the specific no-internet error and play the error sound
+                if (e.message?.contains("Unable to resolve host") == true) {
+                    playErrorSound()
+                }
             }
 
             override fun onResponse(call: Call, response: Response) {
