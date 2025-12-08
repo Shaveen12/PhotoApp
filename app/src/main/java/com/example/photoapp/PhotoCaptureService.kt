@@ -2,8 +2,6 @@ package com.example.photoapp
 
 import android.accessibilityservice.AccessibilityService
 import android.content.ContentValues
-import android.content.Context
-import android.media.AudioManager
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
@@ -117,24 +115,23 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
                     val msg = "Service photo capture succeeded: ${output.savedUri}"
                     Log.d(TAG, msg)
-                    // We no longer play a local sound, we wait for the server's audio response.
-                    output.savedUri?.let { identifyFace(it) }
+                    output.savedUri?.let { getIdentificationAudio(it) } // Get and play audio from server
                 }
             }
         )
     }
 
-    private fun identifyFace(fileUri: Uri) {
-        Log.d(TAG, "Preparing to identify face for image: $fileUri")
+    private fun getIdentificationAudio(fileUri: Uri) {
+        Log.d(TAG, "Requesting identification audio for image: $fileUri")
         val imageBytes = try {
             contentResolver.openInputStream(fileUri)?.use { it.readBytes() }
         } catch (e: IOException) {
-            Log.e(TAG, "Could not read bytes from content URI for identification", e)
+            Log.e(TAG, "Could not read bytes from content URI", e)
             null
         }
 
         if (imageBytes == null) {
-            Log.e(TAG, "Image bytes are null, aborting identification request.")
+            Log.e(TAG, "Image bytes are null, aborting audio request.")
             return
         }
 
@@ -154,7 +151,7 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                Log.e(TAG, "Face identification audio request failed: ${e.message}", e)
+                Log.e(TAG, "Identification audio request failed: ${e.message}", e)
             }
 
             override fun onResponse(call: Call, response: Response) {
@@ -162,13 +159,13 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
                     if (it.isSuccessful) {
                         val audioBytes = it.body?.bytes()
                         if (audioBytes != null) {
-                            Log.d(TAG, "Face identification audio received: ${audioBytes.size} bytes.")
+                            Log.d(TAG, "Identification audio received: ${audioBytes.size} bytes.")
                             playAudioData(audioBytes)
                         } else {
                             Log.e(TAG, "Received successful response but audio body was empty.")
                         }
                     } else {
-                        Log.e(TAG, "Face identification audio request failed with code: ${it.code} and message: ${it.body?.string()}")
+                        Log.e(TAG, "Identification audio request failed with code: ${it.code} and message: ${it.body?.string()}")
                     }
                 }
             }
@@ -177,14 +174,12 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
 
     private fun playAudioData(audioBytes: ByteArray) {
         try {
-            // Create a temporary file in the app's cache directory
             val tempMp3 = File.createTempFile("temp_audio", ".mp3", cacheDir)
             val fos = FileOutputStream(tempMp3)
             fos.write(audioBytes)
             fos.close()
             Log.d(TAG, "Audio data saved to temporary file: ${tempMp3.path}")
 
-            // Play the temporary file with MediaPlayer
             val mediaPlayer = MediaPlayer()
             mediaPlayer.setDataSource(tempMp3.absolutePath)
             mediaPlayer.prepare()
@@ -195,7 +190,7 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
             }
             mediaPlayer.start()
         } catch (e: IOException) {
-            Log.e(TAG, "Error playing audio data", e)
+            Log.e(TAG, "Error playing audio data from server", e)
         }
     }
 

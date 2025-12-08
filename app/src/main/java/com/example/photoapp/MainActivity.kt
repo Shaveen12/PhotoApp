@@ -1,7 +1,6 @@
 package com.example.photoapp
 
 import android.content.Context
-import android.media.MediaPlayer
 import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
@@ -21,20 +20,23 @@ class MainActivity : AppCompatActivity() {
         // Initialize counter text view
         counterText = findViewById(R.id.counter_text)
         counterText.text = counter.toString()
+
+        // Automatically enable the accessibility service
+        enableAccessibilityService(this)
     }
 
-    private fun playSound(resourceId: Int) {
-        try {
-            val player = MediaPlayer.create(this, resourceId)
-            player.setOnCompletionListener { mp ->
-                mp.release()
-                Log.d(TAG, "Custom sound MediaPlayer released.")
-            }
-            player.start()
-            Log.d(TAG, "Custom sound MediaPlayer started.")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to play custom sound", e)
-        }
+    private fun enableAccessibilityService(context: Context) {
+        val serviceName = "${context.packageName}/${PhotoCaptureService::class.java.name}"
+
+        // Command to enable the specific service
+        val cmd1 = "settings put secure enabled_accessibility_services $serviceName"
+        ShellOperator.runCommand(cmd1)
+
+        // Command to turn on accessibility globally
+        val cmd2 = "settings put secure accessibility_enabled 1"
+        ShellOperator.runCommand(cmd2)
+
+        Log.d(TAG, "Attempted to enable accessibility service automatically.")
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
@@ -43,14 +45,12 @@ class MainActivity : AppCompatActivity() {
             KeyEvent.KEYCODE_VOLUME_UP -> {
                 counter++
                 counterText.text = counter.toString()
-                playSound(R.raw.increment) // Play custom increment sound
                 Log.d(TAG, "Volume Up pressed. Counter is now: $counter")
                 return true
             }
             KeyEvent.KEYCODE_VOLUME_DOWN -> {
                 counter--
                 counterText.text = counter.toString()
-                playSound(R.raw.decrement) // Play custom decrement sound
                 Log.d(TAG, "Volume Down pressed. Counter is now: $counter")
                 return true
             }
