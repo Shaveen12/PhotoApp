@@ -21,27 +21,32 @@ import com.google.mlkit.vision.face.Face
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetector
 import com.google.mlkit.vision.face.FaceDetectorOptions
-import okhttp3.*
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
-import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
 
     private lateinit var lifecycleRegistry: LifecycleRegistry
-    private lateinit var cameraExecutor: ExecutorService
 
-    private var cameraProvider: ProcessCameraProvider? = null
+    private lateinit var cameraExecutor: ExecutorService
     private var imageAnalysis: ImageAnalysis? = null
+    private var cameraProvider: ProcessCameraProvider? = null
     private var isCameraBound: Boolean = false
 
     private var faceDetector: FaceDetector? = null
+
     private var waitingForFace: Boolean = false
     private var lastAnalysisTimeNanos: Long = 0L
 
@@ -69,55 +74,58 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
     override fun onServiceConnected() {
         super.onServiceConnected()
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
+
+        // Ensure LED starts off
+        LEDUtils.setled(LEDUtils.BLUE, false)
+
         Log.d(TAG, "onServiceConnected: service connected, camera not started yet")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // Not used
+        // Not used in this flow
     }
 
     override fun onInterrupt() {
-        Log.w(TAG, "onInterrupt: service interrupted")
+        Log.w(TAG, "Service interrupted")
     }
 
     override fun onKeyEvent(event: KeyEvent): Boolean {
-        if (event.action != KeyEvent.ACTION_UP) {
-            return false
-        }
+        if (event.action == KeyEvent.ACTION_UP) {
+            when (event.keyCode) {
+                // F2: arm detection and start camera if needed
+                KeyEvent.KEYCODE_F2 -> {
+                    Log.d(TAG, "onKeyEvent: F2 pressed, arming face detection")
+                    waitingForFace = true
+                    lastAnalysisTimeNanos = 0L
 
-        when (event.keyCode) {
-            KeyEvent.KEYCODE_F2 -> {
-                Log.d(TAG, "onKeyEvent: F2 pressed -> arming face detection")
-
-                // Allow ML Kit to run again
-                waitingForFace = true
-                lastAnalysisTimeNanos = 0L
-
-                // Start camera if not already bound
-                if (!isCameraBound) {
-                    Log.d(TAG, "onKeyEvent: camera not bound, calling startCamera()")
-                    startCamera()
-                } else {
-                    Log.d(TAG, "onKeyEvent: camera already bound, will use upcoming frames")
+                    if (!isCameraBound) {
+                        Log.d(TAG, "onKeyEvent: camera not bound, calling startCamera()")
+                        startCamera()
+                    } else {
+                        Log.d(TAG, "onKeyEvent: camera already bound, just arming detection")
+                    }
+                    return true
                 }
-                return true
-            }
 
-            KeyEvent.KEYCODE_DPAD_DOWN -> {
-                Log.d(TAG, "onKeyEvent: DPAD_DOWN pressed -> stopping detection and camera")
-                // Stop ML Kit and camera for battery saving
-                waitingForFace = false
-                stopCamera()
-                return true
+                // DPAD_DOWN: stop camera and detection to save battery
+                KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    Log.d(TAG, "onKeyEvent: DPAD_DOWN pressed, stopping camera and detection")
+                    waitingForFace = false
+                    stopCamera()
+                    return true
+                }
             }
         }
-
         return false
     }
 
     private fun startCamera() {
-        Log.d(TAG, "startCamera: requesting ProcessCameraProvider")
+        if (isCameraBound) {
+            Log.d(TAG, "startCamera: camera already bound, skipping")
+            return
+        }
 
+        Log.d(TAG, "startCamera: requesting ProcessCameraProvider")
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
 
         cameraProviderFuture.addListener({
@@ -125,57 +133,64 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
             cameraProvider = provider
             Log.d(TAG, "startCamera: ProcessCameraProvider obtained")
 
-            val analysis = ImageAnalysis.Builder()
+            imageAnalysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                 .build()
-                .also { analysisUseCase ->
-                    analysisUseCase.setAnalyzer(cameraExecutor) { imageProxy ->
+                .also { analysis ->
+                    analysis.setAnalyzer(cameraExecutor) { imageProxy ->
                         processImageProxy(imageProxy)
                     }
                 }
-
-            imageAnalysis = analysis
 
             try {
                 provider.unbindAll()
                 provider.bindToLifecycle(
                     this,
                     CameraSelector.DEFAULT_BACK_CAMERA,
-                    analysis
+                    imageAnalysis
                 )
                 isCameraBound = true
-                Log.d(TAG, "startCamera: camera bound successfully, isCameraBound=true")
+
+                LEDUtils.setled(LEDUtils.BLUE, true)
+                Log.d(TAG, "startCamera: camera bound successfully, isCameraBound=true, LED on")
             } catch (e: Exception) {
-                isCameraBound = false
                 Log.e(TAG, "startCamera: camera binding failed", e)
+                isCameraBound = false
+                LEDUtils.setled(LEDUtils.BLUE, false)
             }
 
         }, ContextCompat.getMainExecutor(this))
     }
 
     private fun stopCamera() {
-        Log.d(TAG, "stopCamera: unbinding camera and clearing analyzer")
+        if (!isCameraBound) {
+            Log.d(TAG, "stopCamera: camera not bound, nothing to do")
+            return
+        }
+
         try {
             cameraProvider?.unbindAll()
         } catch (e: Exception) {
-            Log.e(TAG, "stopCamera: error unbinding camera", e)
+            Log.e(TAG, "stopCamera: error while unbinding camera", e)
         }
+
         imageAnalysis?.clearAnalyzer()
         imageAnalysis = null
         isCameraBound = false
+
+        LEDUtils.setled(LEDUtils.BLUE, false)
+        Log.d(TAG, "stopCamera: camera stopped, LED off")
     }
 
     private fun processImageProxy(imageProxy: ImageProxy) {
-        // Only run ML Kit if we are currently waiting for a face
         if (!waitingForFace) {
             imageProxy.close()
             return
         }
 
-        // Throttle to 1 frame per second
         val now = System.nanoTime()
-        if (now - lastAnalysisTimeNanos < 1_000_000_000L) {
+        if (now - lastAnalysisTimeNanos < ONE_SECOND_NS) {
             imageProxy.close()
             return
         }
@@ -188,7 +203,10 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
         }
 
         val rotation = imageProxy.imageInfo.rotationDegrees
-        Log.d(TAG, "processImageProxy: running ML Kit on frame, rotation=$rotation, ts=${imageProxy.imageInfo.timestamp}")
+        Log.d(
+            TAG,
+            "processImageProxy: running ML Kit on frame, rotation=$rotation, ts=${imageProxy.imageInfo.timestamp}"
+        )
 
         val image = InputImage.fromMediaImage(mediaImage, rotation)
 
@@ -198,23 +216,20 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
                 handleFaceResults(faces, imageProxy)
             }
             ?.addOnFailureListener { e ->
-                Log.e(TAG, "ML Kit face detection failed", e)
+                Log.e(TAG, "Face detection failed", e)
                 imageProxy.close()
-            }
-            ?.addOnCompleteListener {
-                // Do not close here, handled in success or failure branches
             }
     }
 
     private fun handleFaceResults(faces: List<Face>, imageProxy: ImageProxy) {
         if (!waitingForFace) {
+            Log.d(TAG, "handleFaceResults: not waiting for face anymore, discarding frame")
             imageProxy.close()
             return
         }
 
         if (faces.isNotEmpty()) {
-            Log.d(TAG, "handleFaceResults: face detected, extracting JPEG")
-            // Stop ML Kit after first detection
+            Log.d(TAG, "handleFaceResults: face detected, extracting JPEG and stopping detection")
             waitingForFace = false
 
             val jpegBytes = convertImageProxyToJpeg(imageProxy)
@@ -224,7 +239,7 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
                 Log.d(TAG, "convertImageProxyToJpeg: JPEG size=${jpegBytes.size} bytes")
                 playCaptureSoundAndThenUpload(jpegBytes)
             } else {
-                Log.e(TAG, "convertImageProxyToJpeg: failed, jpegBytes=null")
+                Log.e(TAG, "convertImageProxyToJpeg: failed to convert frame")
             }
         } else {
             Log.d(TAG, "handleFaceResults: no faces in this frame")
@@ -248,10 +263,8 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
 
         val nv21 = ByteArray(ySize + uSize + vSize)
 
-        // Y
         yBuffer.get(nv21, 0, ySize)
 
-        // Interleave V and U into NV21
         val chromaRowStride = image.planes[1].rowStride
         val chromaRowPadding = chromaRowStride - width / 2
 
@@ -279,9 +292,9 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
         }
 
         return try {
-            val yuv = YuvImage(nv21, ImageFormat.NV21, width, height, null)
+            val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
             val out = ByteArrayOutputStream()
-            yuv.compressToJpeg(Rect(0, 0, width, height), 85, out)
+            yuvImage.compressToJpeg(Rect(0, 0, width, height), 85, out)
             out.toByteArray()
         } catch (e: Exception) {
             Log.e(TAG, "convertImageProxyToJpeg: JPEG compression failed", e)
@@ -294,13 +307,14 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
         try {
             mediaPlayer = MediaPlayer.create(this, R.raw.increment)
             mediaPlayer?.setOnCompletionListener {
-                Log.d(TAG, "Capture sound finished -> uploading JPEG")
+                Log.d(TAG, "Capture sound finished, uploading JPEG")
                 uploadToServer(jpegBytes)
                 stopPlayer()
             }
             mediaPlayer?.start()
         } catch (e: Exception) {
-            Log.e(TAG, "playCaptureSoundAndThenUpload: failed playing sound", e)
+            Log.e(TAG, "Failed to play capture sound", e)
+            uploadToServer(jpegBytes)
         }
     }
 
@@ -323,7 +337,7 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                Log.e(TAG, "uploadToServer: failed: ${e.message}", e)
+                Log.e(TAG, "uploadToServer: failed ${e.message}", e)
                 playErrorSound()
             }
 
@@ -355,8 +369,9 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
                 temp.delete()
             }
             mediaPlayer?.start()
+            Log.d(TAG, "playAudioData: playing server audio")
         } catch (e: IOException) {
-            Log.e(TAG, "playAudioData: failed playing server audio", e)
+            Log.e(TAG, "playAudioData: failed", e)
         }
     }
 
@@ -367,27 +382,32 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
             mediaPlayer?.setOnCompletionListener { stopPlayer() }
             mediaPlayer?.start()
         } catch (e: Exception) {
-            Log.e(TAG, "playErrorSound: failed", e)
+            Log.e(TAG, "Failed to play error sound", e)
         }
     }
 
     private fun stopPlayer() {
-        mediaPlayer?.stop()
+        try {
+            mediaPlayer?.stop()
+        } catch (_: Exception) {
+        }
         mediaPlayer?.release()
         mediaPlayer = null
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
+        Log.d(TAG, "onDestroy: cleaning up service")
+        waitingForFace = false
         stopCamera()
-        cameraExecutor.shutdown()
         faceDetector?.close()
         stopPlayer()
-        Log.d(TAG, "onDestroy: service destroyed, camera and detector closed")
+        cameraExecutor.shutdown()
+        lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
     }
 
     companion object {
         private const val TAG = "PhotoCaptureService"
+        private const val ONE_SECOND_NS = 1_000_000_000L
     }
 }
