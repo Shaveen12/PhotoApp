@@ -52,6 +52,9 @@ dependencies {
     // Networking dependency
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
+    // JSON parsing
+    implementation("org.json:json:20231013")
+
     // ML Kit face detection
     implementation("com.google.mlkit:face-detection:16.1.7")
 }

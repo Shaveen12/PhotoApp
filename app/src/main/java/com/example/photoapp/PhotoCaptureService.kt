@@ -5,6 +5,9 @@ import android.graphics.ImageFormat
 import android.graphics.Rect
 import android.graphics.YuvImage
 import android.media.MediaPlayer
+import android.os.Handler
+import android.os.Looper
+import android.util.Base64
 import android.util.Log
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
@@ -27,8 +30,10 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -53,6 +58,13 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
     private val client = OkHttpClient()
     private var mediaPlayer: MediaPlayer? = null
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var voiceRecorder: VoiceRecorder? = null
+
+    // CRITICAL: This flag prevents the user from pressing F2 while
+    // the app is speaking, recording, or uploading.
+    private var isBusyProcessing: Boolean = false
+
     override val lifecycle: Lifecycle
         get() = lifecycleRegistry
 
@@ -76,7 +88,7 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
 
         // Ensure LED starts off
-        LEDUtils.setled(LEDUtils.BLUE, false)
+        // LEDUtils.setled(LEDUtils.BLUE, false)
 
         Log.d(TAG, "onServiceConnected: service connected, camera not started yet")
     }
@@ -94,6 +106,11 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
             when (event.keyCode) {
                 // F2: arm detection and start camera if needed
                 KeyEvent.KEYCODE_F2 -> {
+                    if (isBusyProcessing) {
+                        Log.w(TAG, "System is busy processing an audio flow. Ignoring F2.")
+                        return true
+                    }
+
                     Log.d(TAG, "onKeyEvent: F2 pressed, arming face detection")
                     waitingForFace = true
                     lastAnalysisTimeNanos = 0L
@@ -152,12 +169,12 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
                 )
                 isCameraBound = true
 
-                LEDUtils.setled(LEDUtils.BLUE, true)
+                // LEDUtils.setled(LEDUtils.BLUE, true)
                 Log.d(TAG, "startCamera: camera bound successfully, isCameraBound=true, LED on")
             } catch (e: Exception) {
                 Log.e(TAG, "startCamera: camera binding failed", e)
                 isCameraBound = false
-                LEDUtils.setled(LEDUtils.BLUE, false)
+                // LEDUtils.setled(LEDUtils.BLUE, false)
             }
 
         }, ContextCompat.getMainExecutor(this))
@@ -179,7 +196,7 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
         imageAnalysis = null
         isCameraBound = false
 
-        LEDUtils.setled(LEDUtils.BLUE, false)
+        // LEDUtils.setled(LEDUtils.BLUE, false)
         Log.d(TAG, "stopCamera: camera stopped, LED off")
     }
 
@@ -240,6 +257,7 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
                 playCaptureSoundAndThenUpload(jpegBytes)
             } else {
                 Log.e(TAG, "convertImageProxyToJpeg: failed to convert frame")
+                isBusyProcessing = false // UNLOCK THE SERVICE ON FAILURE
             }
         } else {
             Log.d(TAG, "handleFaceResults: no faces in this frame")
@@ -303,6 +321,7 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
     }
 
     private fun playCaptureSoundAndThenUpload(jpegBytes: ByteArray) {
+        isBusyProcessing = true // Lock the system
         stopPlayer()
         try {
             mediaPlayer = MediaPlayer.create(this, R.raw.increment)
@@ -331,34 +350,66 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
             .build()
 
         val request = Request.Builder()
-            .url("https://vertically-prime-snake.ngrok-free.app/face/identify-audio")
+            .url("https://wearyingly-eremophilous-angle.ngrok-free.dev/face/identify-audio")
             .post(requestBody)
             .build()
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 Log.e(TAG, "uploadToServer: failed ${e.message}", e)
-                playErrorSound()
+                mainHandler.post {
+                    playErrorSound()
+                    isBusyProcessing = false
+                }
             }
 
             override fun onResponse(call: Call, response: Response) {
-                response.use {
-                    val audioBytes = it.body?.bytes()
-                    if (audioBytes != null) {
-                        Log.d(TAG, "uploadToServer: received audio, bytes=${audioBytes.size}")
-                        playAudioData(audioBytes)
+                val responseBodyString = response.body?.string()
+                // Removed full JSON logging
+
+                mainHandler.post {
+                    if (response.isSuccessful && responseBodyString != null) {
+                        try {
+                            val json = JSONObject(responseBodyString)
+                            val isIdentified = json.optBoolean("identified")
+                            val base64Audio = json.optString("audio_data")
+                            Log.d(TAG, "JSON Parsed: isIdentified=$isIdentified, audioLength=${base64Audio.length}")
+
+                            if (isIdentified) {
+                                decodeBase64AndPlay(base64Audio) {
+                                    isBusyProcessing = false
+                                }
+                            } else {
+                                val tempPersonId = json.optString("temp_person_id")
+                                Log.d(TAG, "Unknown person. tempPersonId=$tempPersonId. Starting enrollment sequence.")
+                                decodeBase64AndPlay(base64Audio) {
+                                    initiateEnrollmentSequence(tempPersonId)
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "JSON Parse Error", e)
+                            playErrorSound()
+                            isBusyProcessing = false
+                        }
                     } else {
-                        Log.e(TAG, "uploadToServer: empty audio response")
+                        Log.e(TAG, "Server Error: Code=${response.code}")
+                        playErrorSound()
+                        isBusyProcessing = false
                     }
                 }
             }
         })
     }
 
-    private fun playAudioData(audioBytes: ByteArray) {
+    private fun decodeBase64AndPlay(base64Audio: String, onCompletion: (() -> Unit)? = null) {
         stopPlayer()
+        if (base64Audio.isEmpty()) {
+            onCompletion?.invoke()
+            return
+        }
         try {
-            val temp = File.createTempFile("result_audio", ".mp3", cacheDir)
+            val audioBytes = Base64.decode(base64Audio, Base64.DEFAULT)
+            val temp = File.createTempFile("server_audio", ".mp3", cacheDir)
             FileOutputStream(temp).use { it.write(audioBytes) }
 
             mediaPlayer = MediaPlayer()
@@ -367,11 +418,100 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
             mediaPlayer?.setOnCompletionListener {
                 stopPlayer()
                 temp.delete()
+                onCompletion?.invoke()
             }
             mediaPlayer?.start()
-            Log.d(TAG, "playAudioData: playing server audio")
-        } catch (e: IOException) {
-            Log.e(TAG, "playAudioData: failed", e)
+        } catch (e: Exception) {
+            Log.e(TAG, "Audio playback failed", e)
+            onCompletion?.invoke()
+        }
+    }
+
+    private fun initiateEnrollmentSequence(tempPersonId: String) {
+        stopPlayer()
+        try {
+            mediaPlayer = MediaPlayer.create(this, R.raw.chime_start)
+            mediaPlayer?.setOnCompletionListener {
+                stopPlayer()
+                startVoiceRecording(tempPersonId)
+            }
+            mediaPlayer?.start()
+        } catch (e: Exception) {
+            isBusyProcessing = false
+        }
+    }
+
+    private fun startVoiceRecording(tempPersonId: String) {
+        Log.d(TAG, "startVoiceRecording: Starting voice recorder for person $tempPersonId")
+        val audioFile = File(cacheDir, "name_enrollment.m4a")
+        voiceRecorder = VoiceRecorder(audioFile)
+
+        voiceRecorder?.startRecording(4000) { recordedFile ->
+            Log.d(TAG, "startVoiceRecording: Recording finished. File size=${recordedFile.length()}")
+            playStopCueAndUpload(recordedFile, tempPersonId)
+        }
+    }
+
+    private fun playStopCueAndUpload(audioFile: File, tempPersonId: String) {
+        stopPlayer()
+        try {
+            mediaPlayer = MediaPlayer.create(this, R.raw.chime_end)
+            mediaPlayer?.setOnCompletionListener {
+                stopPlayer()
+                uploadEnrollment(audioFile, tempPersonId)
+            }
+            mediaPlayer?.start()
+        } catch (e: Exception) {
+            uploadEnrollment(audioFile, tempPersonId)
+        }
+    }
+
+    private fun uploadEnrollment(audioFile: File, tempPersonId: String) {
+        Log.d(TAG, "uploadEnrollment: Uploading audio enrollment for $tempPersonId")
+        val requestBody = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("temp_person_id", tempPersonId)
+            .addFormDataPart(
+                "audio_name",
+                "name.m4a",
+                audioFile.asRequestBody("audio/mp4".toMediaTypeOrNull())
+            )
+            .build()
+
+        val request = Request.Builder()
+            .url("https://wearyingly-eremophilous-angle.ngrok-free.dev/face/register-name")
+            .post(requestBody)
+            .build()
+
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e(TAG, "uploadEnrollment: Failed", e)
+                mainHandler.post {
+                    playErrorSound()
+                    isBusyProcessing = false
+                }
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                // Removed full JSON logging here too
+                
+                mainHandler.post {
+                    if (response.isSuccessful) playSuccessSound() else playErrorSound()
+                    isBusyProcessing = false
+                    audioFile.delete()
+                }
+            }
+        })
+    }
+
+    private fun playSuccessSound() {
+        stopPlayer()
+        try {
+            mediaPlayer = MediaPlayer.create(this, R.raw.increment)
+            mediaPlayer?.setOnCompletionListener { stopPlayer() }
+            mediaPlayer?.start()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to play success sound", e)
         }
     }
 
