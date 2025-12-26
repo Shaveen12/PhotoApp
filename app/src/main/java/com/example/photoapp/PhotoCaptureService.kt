@@ -11,7 +11,9 @@ import android.util.Base64
 import android.util.Log
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
+import androidx.annotation.OptIn
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -200,6 +202,7 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
         Log.d(TAG, "stopCamera: camera stopped, LED off")
     }
 
+    @OptIn(ExperimentalGetImage::class)
     private fun processImageProxy(imageProxy: ImageProxy) {
         if (!waitingForFace) {
             imageProxy.close()
@@ -430,7 +433,7 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
     private fun initiateEnrollmentSequence(tempPersonId: String) {
         stopPlayer()
         try {
-            mediaPlayer = MediaPlayer.create(this, R.raw.chime_start)
+            mediaPlayer = MediaPlayer.create(this, R.raw.start)
             mediaPlayer?.setOnCompletionListener {
                 stopPlayer()
                 startVoiceRecording(tempPersonId)
@@ -455,7 +458,7 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
     private fun playStopCueAndUpload(audioFile: File, tempPersonId: String) {
         stopPlayer()
         try {
-            mediaPlayer = MediaPlayer.create(this, R.raw.chime_end)
+            mediaPlayer = MediaPlayer.create(this, R.raw.end)
             mediaPlayer?.setOnCompletionListener {
                 stopPlayer()
                 uploadEnrollment(audioFile, tempPersonId)
@@ -507,7 +510,7 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
     private fun playSuccessSound() {
         stopPlayer()
         try {
-            mediaPlayer = MediaPlayer.create(this, R.raw.increment)
+            mediaPlayer = MediaPlayer.create(this, R.raw.success)
             mediaPlayer?.setOnCompletionListener { stopPlayer() }
             mediaPlayer?.start()
         } catch (e: Exception) {
@@ -518,7 +521,7 @@ class PhotoCaptureService : AccessibilityService(), LifecycleOwner {
     private fun playErrorSound() {
         stopPlayer()
         try {
-            mediaPlayer = MediaPlayer.create(this, R.raw.decrement)
+            mediaPlayer = MediaPlayer.create(this, R.raw.error)
             mediaPlayer?.setOnCompletionListener { stopPlayer() }
             mediaPlayer?.start()
         } catch (e: Exception) {
